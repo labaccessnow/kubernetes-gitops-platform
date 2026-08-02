@@ -1,0 +1,89 @@
+# Prometheus exporter for the shared replica set -> NOC Grafana (VM136).
+# Read-only: connects as the `monitor` user (clusterMonitor role; cannot read tenant data).
+# Exposed as a NodePort so NOC Prometheus (mgmt VLAN) can scrape it without a per-tenant hole
+# (VM136 reaches the k3s node; see proj-noc-command-center SSH-tunnel-scraping notes).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mongo-shared-exporter
+  namespace: mongo-shared
+  labels:
+    app: mongo-shared-exporter
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mongo-shared-exporter
+  template:
+    metadata:
+      labels:
+        app: mongo-shared-exporter
+    spec:
+      containers:
+        - name: exporter
+          image: percona/mongodb_exporter:0.43
+          args:
+            # NOT --discovering-mode: it dials member pod-IPs directly (refused). The plain
+            # RS connection via the seed hostnames in MONGODB_URI is what works.
+            # NOT --collect-all: it emits per-collection/per-index collstats — at 1,000 tenants
+            # that's millions of series (Prometheus OOM). These two bounded collectors give the
+            # whole dashboard (connections, mem, wiredTiger cache, opcounters, network, repl lag,
+            # member states) at cardinality that's flat in tenant count.
+            - "--mongodb.direct-connect=false"
+            - "--collector.diagnosticdata"            # serverStatus-derived
+            - "--collector.replicasetstatus"          # member states + repl lag
+            - "--compatible-mode"                     # classic mongodb_exporter metric names
+            - "--web.listen-address=:9216"
+            - "--web.telemetry-path=/metrics"
+          env:
+            - name: MONGODB_URI
+              valueFrom:
+                secretKeyRef:
+                  name: mongo-shared-secret
+                  key: MONGO_MONITOR_URI
+          ports:
+            - { name: metrics, containerPort: 9216 }
+          resources:
+            requests: { memory: "64Mi", cpu: "20m" }
+            limits: { memory: "192Mi", cpu: "250m" }
+          readinessProbe:
+            httpGet: { path: /, port: metrics }
+            initialDelaySeconds: 10
+            periodSeconds: 15
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mongo-shared-exporter
+  namespace: mongo-shared
+  labels:
+    app: mongo-shared-exporter
+spec:
+  type: NodePort
+  selector:
+    app: mongo-shared-exporter
+  ports:
+    - name: metrics
+      port: 9216
+      targetPort: 9216
+      nodePort: 30916          # NOC Prometheus scrapes <k3s-node-ip>:30916/metrics
+---
+# The mongo-shared ns default-denies ingress; admit the exporter's scrape port. NodePort
+# traffic is SNAT'd to node IPs (10.10.x) — allow the private ranges (covers nodes + VM136).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: mongo-shared-exporter-scrape
+  namespace: mongo-shared
+spec:
+  podSelector:
+    matchLabels:
+      app: mongo-shared-exporter
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - ipBlock: { cidr: 10.0.0.0/8 }
+        - ipBlock: { cidr: 172.16.0.0/12 }
+        - ipBlock: { cidr: 192.168.0.0/16 }
+      ports:
+        - { protocol: TCP, port: 9216 }

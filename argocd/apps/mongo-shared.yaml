@@ -1,0 +1,46 @@
+# Shared MongoDB replica set for the example-app scale-out: ONE cluster holding a database
+# per tenant (ns_<slug>) instead of a Mongo StatefulSet per tenant. Lets example-app grow to
+# 1,000+ tenants on the home k3s. Raw manifests (path: mongo-shared); tenant DBs + scoped
+# users are created dynamically by the control-plane (clients/mongo_admin), not here.
+# prune OFF + no finalizer: NEVER auto-delete the replica set or its PVCs.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: mongo-shared
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: git@github.com:example-org/platform.git
+    targetRevision: main
+    path: mongo-shared
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: mongo-shared
+  syncPolicy:
+    automated:
+      selfHeal: true
+      prune: false
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+  # The StatefulSet sat permanently OutOfSync while syncing "Succeeded" every time. Not drift:
+  # the API server stamps apiVersion/kind/volumeMode/status onto each volumeClaimTemplate, and
+  # ArgoCD compares VCTs as opaque objects rather than normalizing those defaults away. Since
+  # VCTs are IMMUTABLE, the diff could never be reconciled — it would have stayed red forever,
+  # and a permanently-red app is one you stop reading (exactly what hid the deals mastodon
+  # failure). So ignore precisely the four server-stamped fields.
+  #
+  # ⚠️ Deliberately NOT ignoring all of /spec/volumeClaimTemplates: a real edit — say storage
+  # 20Gi -> 50Gi — must still surface as OutOfSync, because StatefulSet VCTs are immutable and
+  # that change requires recreating the StatefulSet by hand. Blanket-ignoring the array would
+  # report Synced while silently doing nothing.
+  ignoreDifferences:
+    - group: apps
+      kind: StatefulSet
+      name: mongo-shared
+      jsonPointers:
+        - /spec/volumeClaimTemplates/0/apiVersion
+        - /spec/volumeClaimTemplates/0/kind
+        - /spec/volumeClaimTemplates/0/spec/volumeMode
+        - /spec/volumeClaimTemplates/0/status

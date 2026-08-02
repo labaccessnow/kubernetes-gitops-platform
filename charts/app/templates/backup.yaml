@@ -1,0 +1,105 @@
+{{- if and .Values.backup.enabled .Values.postgres.enabled }}
+# restic repo PVC (local-path, WaitForFirstConsumer → binds to the node the CronJob lands on).
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "app.fullname" . }}-backup-repo
+  labels:
+    {{- include "app.labels" . | nindent 4 }}
+    app.kubernetes.io/component: backup
+spec:
+  accessModes: ["ReadWriteOnce"]
+  {{- if .Values.backup.repoStorageClassName }}
+  storageClassName: {{ .Values.backup.repoStorageClassName }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.backup.repoStorage }}
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ include "app.fullname" . }}-backup
+  labels:
+    {{- include "app.labels" . | nindent 4 }}
+    app.kubernetes.io/component: backup
+spec:
+  schedule: {{ .Values.backup.schedule | quote }}
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      template:
+        metadata:
+          labels:
+            {{- include "app.selectorLabels" . | nindent 12 }}
+            app.kubernetes.io/component: backup
+        spec:
+          restartPolicy: Never
+          {{- if and .Values.dns .Values.dns.ndots }}
+          dnsConfig:
+            options:
+              - name: ndots
+                value: {{ .Values.dns.ndots | quote }}
+          {{- end }}
+          {{- if .Values.backup.zone }}
+          affinity:
+            nodeAffinity:
+              requiredDuringSchedulingIgnoredDuringExecution:
+                nodeSelectorTerms:
+                  - matchExpressions:
+                      - key: {{ .Values.placement.zoneLabel }}
+                        operator: In
+                        values: [{{ .Values.backup.zone | quote }}]
+          {{- end }}
+          volumes:
+            - name: work
+              emptyDir: {}
+            - name: repo
+              persistentVolumeClaim:
+                claimName: {{ include "app.fullname" . }}-backup-repo
+          initContainers:
+            - name: pg-dump
+              image: {{ .Values.postgres.image }}
+              command: ["sh", "-c"]
+              args:
+                - |
+                  set -euo pipefail
+                  export PGPASSWORD="$POSTGRES_PASSWORD"
+                  out=/work/{{ include "app.fullname" . }}.dump
+                  pg_dump -Fc -h postgres -U "$POSTGRES_USER" "$POSTGRES_DB" -f "$out"
+                  echo "pg_dump OK: $(du -h "$out" | cut -f1)"
+              env:
+                - name: POSTGRES_USER
+                  valueFrom: { secretKeyRef: { name: {{ include "app.secretName" . }}, key: POSTGRES_USER } }
+                - name: POSTGRES_PASSWORD
+                  valueFrom: { secretKeyRef: { name: {{ include "app.secretName" . }}, key: POSTGRES_PASSWORD } }
+                - name: POSTGRES_DB
+                  valueFrom: { secretKeyRef: { name: {{ include "app.secretName" . }}, key: POSTGRES_DB } }
+              volumeMounts:
+                - { name: work, mountPath: /work }
+          containers:
+            - name: restic
+              image: {{ .Values.backup.resticImage }}
+              command: ["sh", "-c"]
+              args:
+                - |
+                  set -euo pipefail
+                  export RESTIC_REPOSITORY=/repo
+                  restic snapshots >/dev/null 2>&1 || restic init
+                  restic backup /work --host {{ include "app.fullname" . }} --tag {{ include "app.fullname" . }}
+                  restic forget --keep-daily {{ .Values.backup.retention.daily }} --keep-weekly {{ .Values.backup.retention.weekly }} --prune
+                  restic check
+                  restic snapshots --compact
+              env:
+                - name: RESTIC_PASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ .Values.backup.passwordSecret | default (printf "%s-backup" (include "app.fullname" .)) }}
+                      key: RESTIC_PASSWORD
+              volumeMounts:
+                - { name: work, mountPath: /work }
+                - { name: repo, mountPath: /repo }
+{{- end }}

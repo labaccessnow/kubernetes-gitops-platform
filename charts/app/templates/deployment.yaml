@@ -1,0 +1,118 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "app.fullname" . }}
+  labels:
+    {{- include "app.labels" . | nindent 4 }}
+    app.kubernetes.io/component: app
+spec:
+  replicas: {{ .Values.app.replicas }}
+  {{- if .Values.placement.zoneSpreadRequired }}
+  strategy:                       # no surge, so a hard zone-spread can't deadlock the rollout
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 0
+      maxUnavailable: 1
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "app.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: app
+  template:
+    metadata:
+      labels:
+        {{- include "app.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: app
+    spec:
+      serviceAccountName: {{ include "app.serviceAccountName" . }}
+      {{- if and .Values.dns .Values.dns.ndots }}
+      dnsConfig:
+        options:
+          - name: ndots
+            value: {{ .Values.dns.ndots | quote }}
+      {{- end }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- if .Values.placement.zoneSpread }}
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: {{ .Values.placement.zoneLabel }}
+          whenUnsatisfiable: {{ if .Values.placement.zoneSpreadRequired }}DoNotSchedule{{ else }}ScheduleAnyway{{ end }}
+          labelSelector:
+            matchLabels:
+              {{- include "app.selectorLabels" . | nindent 14 }}
+              app.kubernetes.io/component: app
+      {{- end }}
+      containers:
+        - name: app
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{- with .Values.app.command }}
+          command: {{ toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.app.args }}
+          args: {{ toYaml . | nindent 12 }}
+          {{- end }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.app.port }}
+          env:
+            {{- include "app.envBlock" . | nindent 12 }}
+          {{- if .Values.app.probes.enabled }}
+          livenessProbe:
+            httpGet: { path: {{ .Values.app.probes.livenessPath }}, port: http }
+            initialDelaySeconds: 40
+            periodSeconds: 15
+          readinessProbe:
+            httpGet: { path: {{ .Values.app.probes.readinessPath }}, port: http }
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          {{- end }}
+          {{- with .Values.app.resources }}
+          resources: {{ toYaml . | nindent 12 }}
+          {{- end }}
+{{- if .Values.worker.enabled }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "app.fullname" . }}-worker
+  labels:
+    {{- include "app.labels" . | nindent 4 }}
+    app.kubernetes.io/component: worker
+spec:
+  replicas: {{ .Values.worker.replicas }}
+  selector:
+    matchLabels:
+      {{- include "app.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: worker
+  template:
+    metadata:
+      labels:
+        {{- include "app.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: worker
+    spec:
+      serviceAccountName: {{ include "app.serviceAccountName" . }}
+      {{- if and .Values.dns .Values.dns.ndots }}
+      dnsConfig:
+        options:
+          - name: ndots
+            value: {{ .Values.dns.ndots | quote }}
+      {{- end }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: worker
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: {{ toYaml .Values.worker.command | nindent 12 }}
+          env:
+            {{- include "app.envBlock" . | nindent 12 }}
+          {{- with .Values.app.resources }}
+          resources: {{ toYaml . | nindent 12 }}
+          {{- end }}
+{{- end }}

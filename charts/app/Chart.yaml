@@ -1,0 +1,11 @@
+apiVersion: v2
+name: app
+description: >-
+  Reusable per-app chart for the example-org platform. One release per app
+  (helm install <app> charts/app -f apps/<app>/values.yaml). Renders a stateless
+  app Deployment (+ optional worker), optional Postgres/Redis StatefulSets,
+  a Service, and a multi-domain Ingress with cert-manager TLS. Vanilla k8s only
+  so the same chart runs on k3s (home) and EKS/AKS (cloud).
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

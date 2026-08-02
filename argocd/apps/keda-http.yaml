@@ -1,0 +1,42 @@
+# KEDA http-add-on — scale-to-zero on HTTP. Provides the HTTPScaledObject CRD (rendered
+# per-tenant by the example-app control-plane) + the interceptor proxy the tenant Ingress
+# routes through so a request wakes a scaled-to-zero Nightscout pod.
+# sync-wave 1: after keda core (its CRDs must exist first). prune OFF.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: keda-http
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  project: default
+  source:
+    repoURL: https://kedacore.github.io/charts
+    chart: keda-add-ons-http
+    targetRevision: 0.15.0     # >=0.15 also drops the kube-rbac-proxy sidecar (gcr image Google deleted)
+    helm:
+      releaseName: keda-add-ons-http
+      values: |
+        # interceptor is the data-path proxy the tenant Ingress ExternalName points at
+        # (keda-add-ons-http-interceptor-proxy.keda.svc:8080). Give it HA once past a few
+        # sleepable tenants.
+        interceptor:
+          replicas:
+            min: 2
+          # Cold-start tuning: Nightscout takes ~20-30s from 0. Defaults 502 the first
+          # request (observed at ~20s in the 0.9.0 prototype). readinessTimeout bounds the
+          # wait-for-scale-from-zero; responseHeaderTimeout bounds the app's reply after ready.
+          readinessTimeout: 120s
+          responseHeaderTimeout: 60s
+          requestTimeout: 180s
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: keda
+  syncPolicy:
+    automated:
+      selfHeal: true
+      prune: false
+    syncOptions:
+      - CreateNamespace=true      # tolerate racing the keda-core app for ns creation
+      - ServerSideApply=true

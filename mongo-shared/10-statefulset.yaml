@@ -1,0 +1,112 @@
+# 3-member MongoDB replica set (rs0), auth + keyFile internal auth. Model: the chart's
+# postgres.yaml StatefulSet, extended to a replica set. Members spread across nodes
+# (podAntiAffinity) for VM/node redundancy; local-path PVCs (WaitForFirstConsumer) pin each
+# member to its node's disk. mongo:8.0 (4.4 was EOL Feb 2024): tenants run Nightscout
+# >=15.0.7, the first release hardened for MongoDB driver 5.x / Mongo 8.
+# ⚠️ 8.0 images ship `mongosh` only (legacy `mongo` shell removed) — probes/init/backup
+# all use mongosh. Version bumps on a POPULATED cluster need the mongodump->fresh-PVC
+# rebuild (or stepwise FCV upgrades); see README.
+apiVersion: v1
+kind: Service
+metadata:
+  name: mongo-shared            # headless: stable per-pod DNS mongo-shared-<n>.mongo-shared.mongo-shared.svc
+  namespace: mongo-shared
+  labels:
+    app: mongo-shared
+spec:
+  clusterIP: None
+  selector:
+    app: mongo-shared
+  ports:
+    - name: mongo
+      port: 27017
+      targetPort: 27017
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: mongo-shared
+  namespace: mongo-shared
+  labels:
+    app: mongo-shared
+spec:
+  serviceName: mongo-shared
+  replicas: 3
+  selector:
+    matchLabels:
+      app: mongo-shared
+  template:
+    metadata:
+      labels:
+        app: mongo-shared
+    spec:
+      affinity:
+        podAntiAffinity:                     # one member per node where possible
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels: { app: mongo-shared }
+                topologyKey: kubernetes.io/hostname
+      securityContext:
+        fsGroup: 999                         # mongodb uid/gid in the official image
+      initContainers:
+        # mongod refuses a keyFile that is group/world-readable, so copy it to an emptyDir
+        # owned by the mongodb user with mode 0400 (a Secret volume can't guarantee this).
+        - name: fix-keyfile
+          image: mongo:8.0
+          command: ["sh", "-c", "cp /etc/mongo-key/keyfile /keydir/keyfile && chmod 0400 /keydir/keyfile && chown 999:999 /keydir/keyfile"]
+          volumeMounts:
+            - { name: keyfile-src, mountPath: /etc/mongo-key }
+            - { name: keydir, mountPath: /keydir }
+      containers:
+        - name: mongo
+          image: mongo:8.0
+          command:
+            - mongod
+            - "--replSet"
+            - rs0
+            - "--auth"
+            - "--keyFile"
+            - /keydir/keyfile
+            - "--bind_ip_all"
+            - "--wiredTigerCacheSizeGB"
+            - "1.0"                            # cap cache; shared cluster, many small tenant DBs
+          ports:
+            - { name: mongo, containerPort: 27017 }
+          env:
+            # Root user is created on member-0's first start (localhost exception); the RS
+            # init Job (20-rs-init-job) runs rs.initiate() so the user is valid cluster-wide.
+            - name: MONGO_INITDB_ROOT_USERNAME
+              valueFrom: { secretKeyRef: { name: mongo-shared-secret, key: MONGO_ROOT_USERNAME } }
+            - name: MONGO_INITDB_ROOT_PASSWORD
+              valueFrom: { secretKeyRef: { name: mongo-shared-secret, key: MONGO_ROOT_PASSWORD } }
+          volumeMounts:
+            - { name: data, mountPath: /data/db }
+            - { name: keydir, mountPath: /keydir }
+          resources:
+            requests: { memory: "512Mi", cpu: "250m" }
+            limits: { memory: "2Gi", cpu: "1000m" }
+          readinessProbe:
+            exec:
+              command: ["mongosh", "--quiet", "--eval", "db.adminCommand({ping:1})"]
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            timeoutSeconds: 10       # mongosh is a Node app: >1s startup, so the 1s default always fails
+      volumes:
+        - name: keyfile-src
+          secret:
+            secretName: mongo-shared-secret
+            items:
+              - { key: MONGO_KEYFILE, path: keyfile }
+        - name: keydir
+          emptyDir: {}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        # storageClassName omitted -> cluster default (local-path on k3s)
+        resources:
+          requests:
+            storage: 20Gi

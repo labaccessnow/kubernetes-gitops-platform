@@ -1,0 +1,42 @@
+# Ingress lock-down: only example-app tenant namespaces + the control-plane may reach 27017.
+# The shared Mongo replaces per-tenant Mongo, so cross-tenant isolation now rests on (a) this
+# policy scoping WHO can open a socket and (b) each tenant's readWrite-on-own-db-only user.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: mongo-shared-default-deny
+  namespace: mongo-shared
+spec:
+  podSelector: {}
+  policyTypes: [Ingress]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: mongo-shared-allow-clients
+  namespace: mongo-shared
+spec:
+  podSelector:
+    matchLabels:
+      app: mongo-shared
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        # every per-tenant Nightscout namespace carries this label (tenant-k8s.yaml.j2)
+        - namespaceSelector:
+            matchLabels:
+              app.kubernetes.io/managed-by: example-control-plane
+        # the control-plane / shared CGM ingester (writes entries straight to tenant dbs)
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: example-app
+        # intra-namespace (replica set members talking to each other)
+        - podSelector:
+            matchLabels:
+              app: mongo-shared
+        # the Prometheus exporter (read-only monitor user; same namespace, different label)
+        - podSelector:
+            matchLabels:
+              app: mongo-shared-exporter
+      ports:
+        - { protocol: TCP, port: 27017 }

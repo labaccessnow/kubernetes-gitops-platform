@@ -1,0 +1,84 @@
+# example-app — a representative tenant instance of charts/app.
+#
+# Onboarding a tenant is this file, nothing else: scripts/onboard-app.sh scaffolds it
+# from the chart defaults, you fill in the image, domains and secret KEY NAMES, and
+# ArgoCD reconciles it. Secret *values* never appear here — only the names of keys the
+# app expects to find in Secret/example-app-secrets (managed via SealedSecrets).
+#
+# This file exercises most of the chart surface on purpose: replicated web app, a
+# background worker, per-tenant Postgres and Redis, multi-domain ingress, and an
+# encrypted scheduled backup.
+
+image:
+  repository: ghcr.io/example-org/example-app
+  tag: "1.4.2"                  # pin tags; :latest makes rollbacks guesswork
+  pullPolicy: IfNotPresent
+
+imagePullSecrets:
+  - name: ghcr                  # SealedSecret, applied by the platform
+
+dns:
+  ndots: "1"                    # resolve external FQDNs absolute-first (see chart notes)
+
+# ── Web tier ─────────────────────────────────────────────────────────────────
+app:
+  replicas: 2                   # one per failure domain — see platform.zone below
+  port: 8000
+  env:
+    LOG_LEVEL: info
+    FEATURE_SIGNUP: "true"
+  secretEnv:                    # key names only; values live in the SealedSecret
+    - SECRET_KEY
+    - DATABASE_URL
+    - REDIS_URL
+  resources:
+    requests: { cpu: 100m, memory: 256Mi }
+    limits:   { cpu: 1,    memory: 1Gi }
+  probes:
+    enabled: true
+    livenessPath: /healthz
+    readinessPath: /readyz
+
+# ── Background worker: same image, different entrypoint ──────────────────────
+worker:
+  enabled: true
+  replicas: 1
+  command: ["python", "worker.py"]
+
+# ── Per-tenant stateful backing services ─────────────────────────────────────
+# Pinned to a single failure domain (placement.dbZone). A database that migrates
+# between zones is worse than one that stays put; the backup crosses the boundary
+# instead of the data.
+postgres:
+  enabled: true
+  storage: 10Gi
+  passwordSecret: example-app-secrets
+
+redis:
+  enabled: true
+  storage: 1Gi
+
+# ── Ingress: one app, many hostnames ─────────────────────────────────────────
+ingress:
+  enabled: true
+  className: traefik
+  domains:
+    - app.example.com
+    - www.example.com           # multi-domain is a first-class case, not a bolt-on
+  tls:
+    enabled: true               # wildcard cert + default TLS store from tenant-ingress/
+
+# ── Backup: encrypted, scheduled, off-cluster ────────────────────────────────
+backup:
+  enabled: true
+  schedule: "20 3 * * *"        # nightly, staggered off other tenants
+  retention: 14
+  repository: s3:s3.example.com/backups/example-app
+  passwordSecret: example-app-secrets   # RESTIC_PASSWORD
+
+# ── Placement across failure domains ─────────────────────────────────────────
+placement:
+  dbZone: a                     # stateful pinned here
+
+platform:
+  zone: spread                  # stateless replicas spread across zones

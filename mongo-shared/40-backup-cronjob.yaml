@@ -1,0 +1,99 @@
+# 6-hourly encrypted backup of the WHOLE shared cluster (all tenant dbs) — mongodump --oplog
+# (cluster-point-in-time-consistent) from a SECONDARY (offloads the primary), piped to a restic
+# repo PVC. Same shape as charts/app/templates/backup.yaml (pg_dump->restic). CGM data arrives
+# every 1-5 min per tenant, so backup frequency directly bounds fleet-wide RPO; move to Percona
+# Backup for MongoDB (continuous oplog streaming, RPO~seconds) as tenant count grows.
+# Repo PVC is local-path; offsite DR rides the existing age+rclone job (proj-offsite-backup-dr).
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: mongo-shared-backup-repo
+  namespace: mongo-shared
+  labels:
+    app: mongo-shared
+    app.kubernetes.io/component: backup
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 20Gi
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: mongo-shared-backup
+  namespace: mongo-shared
+  labels:
+    app: mongo-shared
+    app.kubernetes.io/component: backup
+spec:
+  schedule: "15 */6 * * *"        # every 6h (RPO bound for CGM history); offset from the 03:00 pg backup
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      template:
+        metadata:
+          labels: { app: mongo-shared, app.kubernetes.io/component: backup }
+        spec:
+          restartPolicy: Never
+          volumes:
+            - name: work
+              emptyDir: {}
+            - name: repo
+              persistentVolumeClaim:
+                claimName: mongo-shared-backup-repo
+          initContainers:
+            - name: mongodump
+              image: mongo:8.0
+              command: ["sh", "-c"]
+              args:
+                - |
+                  set -eu
+                  H=mongo-shared-0.mongo-shared.mongo-shared.svc.cluster.local
+                  out=/work/mongo-shared.archive.gz
+                  # --oplog: capture the oplog window during the dump -> a consistent
+                  # point-in-time snapshot (restore replays it via --oplogReplay).
+                  # --readPreference=secondary: never load the primary for backups.
+                  # Runs as the least-privilege `backup` user (built-in backup role:
+                  # read-for-dump only, cannot write or administer) — root is break-glass only.
+                  mongodump --host "rs0/$H:27017" -u "$MONGO_BACKUP_USERNAME" -p "$MONGO_BACKUP_PASSWORD" \
+                    --authenticationDatabase admin --readPreference=secondary --oplog \
+                    --gzip --archive="$out"
+                  echo "mongodump OK: $(du -h "$out" | cut -f1)"
+              env:
+                - name: MONGO_BACKUP_USERNAME
+                  valueFrom: { secretKeyRef: { name: mongo-shared-secret, key: MONGO_BACKUP_USERNAME } }
+                - name: MONGO_BACKUP_PASSWORD
+                  valueFrom: { secretKeyRef: { name: mongo-shared-secret, key: MONGO_BACKUP_PASSWORD } }
+              volumeMounts:
+                - { name: work, mountPath: /work }
+          containers:
+            - name: restic
+              image: restic/restic:0.16.4
+              command: ["sh", "-c"]
+              args:
+                - |
+                  set -eu
+                  export RESTIC_REPOSITORY=/repo
+                  restic snapshots >/dev/null 2>&1 || restic init
+                  restic backup /work --host mongo-shared --tag mongo-shared
+                  # --keep-last 8 is what actually delivers the 6-hourly RPO this CronJob
+                  # exists for. `--keep-daily 7` alone retains only the LAST snapshot of each
+                  # day, and since forget runs after EVERY backup it deleted the 00:15/06:15/
+                  # 12:15 snapshots within hours — verified 2026-07-28, all 9 retained
+                  # snapshots sat at 18:15. Three of every four backups were thrown away and
+                  # the real RPO was 24h, not 6h. Harmless while the tenant DBs are empty;
+                  # actively misleading once CGM data (every 1-5 min/tenant) is flowing.
+                  # 8 = two days of 6-hourly; daily/weekly still cover the long tail.
+                  restic forget --keep-last 8 --keep-daily 7 --keep-weekly 4 --prune
+                  restic check
+                  restic snapshots --compact
+              env:
+                - name: RESTIC_PASSWORD
+                  valueFrom: { secretKeyRef: { name: mongo-shared-secret, key: RESTIC_PASSWORD } }
+              volumeMounts:
+                - { name: work, mountPath: /work }
+                - { name: repo, mountPath: /repo }

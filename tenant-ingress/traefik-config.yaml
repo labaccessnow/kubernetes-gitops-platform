@@ -1,0 +1,27 @@
+# Allow ExternalName Services as Ingress backends (disabled by default since Traefik v2.5).
+# Needed for scale-to-zero: each sleepable tenant's Ingress routes to an ExternalName Service
+# (`nightscout-keda`) aliasing the KEDA http-add-on interceptor in the `keda` namespace — the
+# only way an Ingress (same-namespace backends only) can hop namespaces to the shared proxy.
+# k3s's helm controller merges this into the bundled Traefik chart and ROLLS THE TRAEFIK POD
+# (a few seconds of edge blip) when it changes.
+apiVersion: helm.cattle.io/v1
+kind: HelmChartConfig
+metadata:
+  name: traefik
+  namespace: kube-system
+spec:
+  valuesContent: |-
+    providers:
+      kubernetesIngress:
+        allowExternalNameServices: true
+    # Baseline security headers on every HTTPS route this Traefik serves — tenant Nightscout
+    # sites get nothing from the BunkerWeb edge (it fronts only example.com and
+    # app.example.com), and were verified serving no security headers at all on 2026-07-31.
+    # Defined once as an entrypoint default so it also covers tenants that already exist.
+    # See security-headers-middleware.yaml for what it sets and why there is no CSP.
+    # Passed as a static CLI arg rather than `ports.websecure.middlewares`: the chart bundled
+    # with k3s ignores that values key (the helm upgrade completed without changing the
+    # Deployment at all, so the pod never rolled and no header appeared). additionalArguments
+    # lands in the container args, which does change the pod spec and therefore does roll it.
+    additionalArguments:
+      - "--entryPoints.websecure.http.middlewares=kube-system-security-headers@kubernetescrd"

@@ -1,0 +1,11 @@
+# Make the wildcard cert Traefik's DEFAULT: any HTTPS request without a more-specific
+# certificate (i.e. every <tenant>.example.com) is served the *.example.com cert.
+# Tenant Ingresses then omit TLS config entirely. Must live in Traefik's namespace.
+apiVersion: traefik.io/v1alpha1
+kind: TLSStore
+metadata:
+  name: default
+  namespace: kube-system
+spec:
+  defaultCertificate:
+    secretName: example-wildcard-tls

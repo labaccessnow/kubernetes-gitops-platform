@@ -1,0 +1,17 @@
+# Wildcard TLS for per-tenant Nightscout (<tenant>.example.com), issued IN-CLUSTER
+# by cert-manager via DNS-01 (auto-renewing). Used as Traefik's DEFAULT cert (see the
+# TLSStore) so tenant Ingresses need no per-tenant certificate and any new tenant
+# subdomain is served valid TLS the instant its Ingress exists.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: example-wildcard
+  namespace: kube-system
+spec:
+  secretName: example-wildcard-tls
+  issuerRef:
+    name: letsencrypt
+    kind: ClusterIssuer
+  commonName: "*.example.com"
+  dnsNames:
+    - "*.example.com"

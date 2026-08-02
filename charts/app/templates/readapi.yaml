@@ -1,0 +1,88 @@
+{{- if .Values.readApi.enabled }}
+# Shared device read-API (example-app): answers tenant device polls (entries/pebble) straight
+# from the shared Mongo, so panel/watch polling never wakes a tenant's Nightscout pod.
+# DELIBERATELY least-privilege vs the app/worker:
+#   - serviceAccountName: default (NO tenantManager cluster RBAC)
+#   - its OWN env/secretEnv (never the app's — no provisioner Mongo URI, no Stripe/CF keys)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "app.fullname" . }}-readapi
+  labels:
+    {{- include "app.labels" . | nindent 4 }}
+    app.kubernetes.io/component: readapi
+spec:
+  replicas: {{ .Values.readApi.replicas }}
+  selector:
+    matchLabels:
+      {{- include "app.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: readapi
+  template:
+    metadata:
+      labels:
+        {{- include "app.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: readapi
+    spec:
+      serviceAccountName: default
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- if .Values.placement.zoneSpread }}
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: {{ .Values.placement.zoneLabel }}
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              {{- include "app.selectorLabels" . | nindent 14 }}
+              app.kubernetes.io/component: readapi
+      {{- end }}
+      containers:
+        - name: readapi
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: {{ toYaml .Values.readApi.command | nindent 12 }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.readApi.port }}
+          env:
+            {{- range $k, $v := .Values.readApi.env }}
+            - name: {{ $k }}
+              value: {{ $v | quote }}
+            {{- end }}
+            {{- range .Values.readApi.secretEnv }}
+            - name: {{ . }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "app.secretName" $ }}
+                  key: {{ . }}
+            {{- end }}
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            initialDelaySeconds: 15
+            periodSeconds: 15
+          readinessProbe:
+            httpGet: { path: /readyz, port: http }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          {{- with .Values.readApi.resources }}
+          resources: {{ toYaml . | nindent 12 }}
+          {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "app.fullname" . }}-readapi   # tenant ExternalName aliases point here
+  labels:
+    {{- include "app.labels" . | nindent 4 }}
+    app.kubernetes.io/component: readapi
+spec:
+  selector:
+    {{- include "app.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: readapi
+  ports:
+    - name: http
+      port: {{ .Values.readApi.port }}
+      targetPort: {{ .Values.readApi.port }}
+{{- end }}

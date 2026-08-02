@@ -1,0 +1,26 @@
+# Encrypted SealedSecret payloads (the app secrets, now in git). The sealed-secrets
+# controller decrypts each into a real Secret in its own namespace. Each SealedSecret
+# carries its own metadata.namespace, so ArgoCD applies it there (destination.namespace
+# is only the default). prune OFF + no finalizer: never auto-delete a live Secret.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: sealed-payloads
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: git@github.com:example-org/platform.git
+    targetRevision: main
+    path: sealedsecrets
+    directory:
+      recurse: true
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: kube-system
+  syncPolicy:
+    automated:
+      selfHeal: true
+      prune: false
+    syncOptions:
+      - CreateNamespace=false

@@ -1,0 +1,25 @@
+# Shared per-tenant ingress plumbing for example-app: the *.example.com wildcard cert
+# + Traefik default TLSStore. Tenant namespaces/workloads are created dynamically by the
+# control-plane (tenantManager RBAC); this is the TLS layer they route under.
+# prune OFF + no finalizer: never auto-delete the live cert/secret.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: tenant-ingress
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: git@github.com:example-org/platform.git
+    targetRevision: main
+    path: tenant-ingress
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: kube-system
+  syncPolicy:
+    automated:
+      selfHeal: true
+      prune: false
+    syncOptions:
+      - CreateNamespace=false
+      - ServerSideApply=true

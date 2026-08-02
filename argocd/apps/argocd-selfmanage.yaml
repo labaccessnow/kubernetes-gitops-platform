@@ -1,0 +1,28 @@
+# ArgoCD manages its own install (full GitOps closure). Source = the vendored, pinned
+# v3.4.4 install.yaml with our argocd-cm settings baked in (so selfHeal keeps them).
+# ServerSideApply: the applicationsets CRD is too large for client-side apply.
+# prune: false + no finalizer — ArgoCD must NEVER prune/cascade-delete its own resources.
+# Recovery if ever broken: re-run argocd/bootstrap/install-argocd.sh.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: argocd
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: git@github.com:example-org/platform.git
+    targetRevision: main
+    path: argocd/install
+    directory:
+      recurse: true
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+  syncPolicy:
+    automated:
+      selfHeal: true
+      prune: false
+    syncOptions:
+      - CreateNamespace=false
+      - ServerSideApply=true

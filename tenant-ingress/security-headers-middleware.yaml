@@ -1,0 +1,34 @@
+# Baseline security headers for every tenant Nightscout site.
+#
+# WHY: tenant sites (`<slug>.example.com`) are served by THIS Traefik, not by the BunkerWeb
+# edge that fronts example.com and app.example.com — so while those two carry a full
+# header set (HSTS preload, CSP, nosniff, referrer policy), the tenant sites were verified on
+# 2026-07-31 to serve NONE of it. That matters more than it sounds: the tenant page is exactly
+# where a customer types their Nightscout API secret, so clickjacking protection belongs there.
+#
+# Applied as a DEFAULT MIDDLEWARE on the websecure entrypoint (see traefik-config.yaml) rather
+# than per-tenant, because:
+#   * the control-plane's k8s client dispatches on an explicit list of manifest kinds and would
+#     reject a Middleware ("unhandled manifest kind"), and its ServiceAccount has no RBAC for
+#     traefik CRDs — both would need changing for a per-tenant copy;
+#   * an entrypoint default also covers tenants that ALREADY exist, with no re-apply.
+#
+# Deliberately NOT a Content-Security-Policy: Nightscout is a large third-party app that relies
+# on inline scripts and styles, and a CSP tight enough to be worth having would break its UI.
+# The headers here are the ones that are safe to apply blind.
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: security-headers
+  namespace: kube-system # same namespace as Traefik; referenced as <ns>-<name>@kubernetescrd
+spec:
+  headers:
+    contentTypeNosniff: true # stop MIME sniffing turning a response into script
+    customFrameOptionsValue: SAMEORIGIN # no third-party framing of a page that takes a secret
+    referrerPolicy: strict-origin-when-cross-origin
+    # HSTS. example.com already sets includeSubDomains+preload, so browsers that have seen
+    # the apex already enforce this for tenants; sending it here makes a tenant site
+    # self-sufficient rather than dependent on the customer having visited the apex first.
+    stsSeconds: 63072000
+    stsIncludeSubdomains: true
+    stsPreload: true

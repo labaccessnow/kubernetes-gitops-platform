@@ -1,0 +1,51 @@
+{{- /* Generic per-app CronJobs from .Values.cronjobs (default []). Each runs the app image
+       with its own command/args, gets the full app env block (+ RUN_MIGRATIONS=0 so the
+       entrypoint's migrate is skipped for a one-shot job). */ -}}
+{{- range .Values.cronjobs }}
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ include "app.fullname" $ }}-{{ .name }}
+  labels:
+    {{- include "app.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: cronjob
+spec:
+  schedule: {{ .schedule | quote }}
+  {{- /* suspend: park a job that would otherwise fail forever (e.g. an upstream account
+         disabled on us) instead of leaving the Application permanently Degraded — a
+         always-red health signal is one you stop reading. Reverse by removing the flag. */}}
+  suspend: {{ .suspend | default false }}
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 2
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: {{ .backoffLimit | default 2 }}
+      ttlSecondsAfterFinished: {{ .ttlSecondsAfterFinished | default 3600 }}
+      template:
+        metadata:
+          labels:
+            {{- include "app.selectorLabels" $ | nindent 12 }}
+            app.kubernetes.io/component: cronjob
+        spec:
+          restartPolicy: Never
+          serviceAccountName: {{ include "app.serviceAccountName" $ }}
+          {{- with $.Values.imagePullSecrets }}
+          imagePullSecrets:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          containers:
+            - name: {{ .name }}
+              image: "{{ $.Values.image.repository }}:{{ $.Values.image.tag }}"
+              imagePullPolicy: {{ $.Values.image.pullPolicy }}
+              command: {{ toYaml .command | nindent 16 }}
+              args: {{ toYaml .args | nindent 16 }}
+              env:
+                {{- include "app.envBlock" $ | nindent 16 }}
+                - name: RUN_MIGRATIONS
+                  value: "0"
+              {{- with .env }}
+                {{- toYaml . | nindent 16 }}
+              {{- end }}
+{{- end }}

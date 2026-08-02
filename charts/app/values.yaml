@@ -1,0 +1,128 @@
+# ── Per-app contract ────────────────────────────────────────────────────────
+# Onboarding a new app = copy this file to apps/<app>/values.yaml and fill it in.
+# Secret *values* never live here — only the names of keys the app expects in the
+# k8s Secret <release>-secrets (managed via sealed-secrets / external-secrets / SOPS).
+
+nameOverride: ""              # defaults to the Helm release name
+
+image:
+  repository: ghcr.io/example-org/CHANGEME
+  tag: latest
+  pullPolicy: IfNotPresent
+
+# k8s Secret(s) with GHCR pull creds (created per-cluster, out of band).
+imagePullSecrets: []          # e.g. [{ name: ghcr }]
+
+# ── Pod DNS ───────────────────────────────────────────────────────────────────
+# ndots:1 resolves external FQDNs absolute-first, so a node search domain that has
+# a catch-all wildcard (e.g. *.example.com) can't hijack outbound lookups.
+# Single-label in-cluster service names still resolve via the search list. "" = off.
+dns:
+  ndots: "1"
+
+# ── The web app (stateless, replicated) ──────────────────────────────────────
+app:
+  replicas: 2
+  port: 8000
+  command: []                 # [] = image default entrypoint
+  args: []
+  env: {}                     # NON-secret env, key: value
+  secretEnv: []               # keys pulled from <release>-secrets via secretKeyRef
+  resources: {}
+  probes:
+    enabled: true
+    livenessPath: /healthz
+    readinessPath: /readyz
+
+# ── Optional background worker (same image, different command) ────────────────
+worker:
+  enabled: false
+  replicas: 1
+  command: ["python", "worker.py"]
+  # inherits app.env + app.secretEnv
+
+# ── Optional shared device read-API (same image; least-privilege sibling) ─────
+# Serves tenant device reads (entries/pebble) straight from shared Mongo. Runs with
+# serviceAccountName default (no tenantManager RBAC) and its OWN env/secretEnv — give it
+# only what it needs (control DB + Fernet key + a READ-ONLY Mongo URI), never the app's.
+readApi:
+  enabled: false
+  replicas: 2
+  port: 8000
+  command: ["uvicorn", "app.readapi:app", "--host", "0.0.0.0", "--port", "8000"]
+  env: {}
+  secretEnv: []
+  resources: {}
+
+# ── Tenant manager (RBAC) ────────────────────────────────────────────────────
+# When true, give this app a ServiceAccount + cluster-wide RBAC to create/manage
+# per-tenant namespaces + workloads (for SaaS control-planes that provision tenant
+# instances via the k8s API). Off = the app runs as the default ServiceAccount.
+tenantManager:
+  enabled: false
+
+# ── Placement / HA ───────────────────────────────────────────────────────────
+placement:
+  # spread stateless replicas across firewall zones (node label platform.zone)
+  zoneSpread: true
+  # true = HARD spread (DoNotSchedule + maxSurge:0): guarantees <=maxSkew across zones,
+  # so one fw/node can't hold all replicas. Soft (false) only prefers it (scheduler can
+  # collapse onto the emptier node, as happens on a rolling restart). Caps replicas/zone.
+  zoneSpreadRequired: false
+  zoneLabel: platform.zone
+  # pin stateful services to one zone's data node; "" = no constraint (single-node MVP)
+  dbZone: ""
+  dataLabel: platform.data    # nodes that may host PVCs carry <dataLabel>=true
+
+# ── Multi-domain ingress (cert-manager TLS) ──────────────────────────────────
+ingress:
+  enabled: true
+  className: ""               # "" = cluster default (traefik on k3s); set "nginx" if used
+  domains: []                 # list of FQDNs, ANY apex (multi-domain)
+  tls:
+    enabled: true
+    clusterIssuer: letsencrypt # per-host certs by default
+    # wildcardSecret: ""       # set to reuse a pre-issued *.<apex> (DNS-01) cert instead
+  annotations: {}
+
+# ── Optional per-app datastores (node-pinned, local PV) ──────────────────────
+postgres:
+  enabled: false
+  image: postgres:16
+  storage: 5Gi
+  storageClassName: ""        # "" = cluster default (local-path on k3s)
+  # creds read from <release>-secrets: POSTGRES_USER / POSTGRES_PASSWORD / POSTGRES_DB
+
+redis:
+  enabled: false
+  image: redis:7
+  storage: 1Gi
+  storageClassName: ""
+
+# The Secret holding every secretEnv key (+ POSTGRES_* when postgres.enabled).
+# Referenced only — never created by this chart. "" defaults to <release>-secrets.
+existingSecret: ""
+
+# ── Encrypted DB backups (restic) ────────────────────────────────────────────
+# CronJob: pg_dump -Fc (initContainer) -> restic backup/forget/check into a repo PVC.
+# restic gives encryption + retention + integrity check; repo password from a Secret
+# (key RESTIC_PASSWORD, ideally a SealedSecret). Repo backend = a PVC now; point it at
+# S3/B2/MinIO later for off-site (the cloud DR story) with no template change.
+# Requires postgres.enabled. The repo PVC is local-path: pin it to a zone (backup.zone)
+# OTHER than the DB's so losing the DB's node/zone doesn't lose the backups too.
+backup:
+  enabled: false
+  schedule: "0 3 * * *"        # daily 03:00 (cluster TZ)
+  zone: ""                     # platform.zone to pin the repo PVC to (e.g. "fw2"); "" = any
+  repoStorage: 5Gi
+  repoStorageClassName: ""
+  retention:
+    daily: 7
+    weekly: 4
+  resticImage: restic/restic:0.18.1
+  # Secret with RESTIC_PASSWORD. "" defaults to <release>-backup (create as a SealedSecret).
+  passwordSecret: ""
+
+# Extra scheduled jobs on the app image (see templates/cronjobs.yaml). Each: {name, schedule,
+# command, args, [env], [backoffLimit], [ttlSecondsAfterFinished]}. Gets the full app env + RUN_MIGRATIONS=0.
+cronjobs: []

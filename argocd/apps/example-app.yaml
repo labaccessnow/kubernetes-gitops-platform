@@ -1,0 +1,40 @@
+# example-app — a tenant deployed via the reusable charts/app chart.
+#
+# Multi-source Application: source #1 carries the values file ($values ref), source #2 is
+# the chart itself. This renders identically to
+#   helm upgrade --install example-app charts/app -f apps/example-app/values.yaml
+# so ArgoCD cleanly *adopts* an existing Helm release rather than fighting it — the
+# instance label and release name match.
+#
+# Secrets are not in git. Secret/example-app-secrets and the ghcr pull secret are
+# SealedSecrets, decryptable only in-cluster.
+#
+# selfHeal reverts manual drift. prune is OFF so a StatefulSet or PVC is never deleted
+# as a side effect of a git operation — see argocd/root-app.yaml for the reasoning.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: example-app
+  namespace: argocd
+spec:
+  project: default
+  sources:
+    - repoURL: git@github.com:example-org/platform.git
+      targetRevision: main
+      ref: values
+    - repoURL: git@github.com:example-org/platform.git
+      targetRevision: main
+      path: charts/app
+      helm:
+        releaseName: example-app
+        valueFiles:
+          - $values/apps/example-app/values.yaml
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: example-app
+  syncPolicy:
+    automated:
+      selfHeal: true
+      prune: false
+    syncOptions:
+      - CreateNamespace=false
