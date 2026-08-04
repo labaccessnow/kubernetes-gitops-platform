@@ -1,0 +1,28 @@
+name: retry-deploy
+
+# GitHub-hosted runners occasionally come up on IP ranges the deploy host
+# filters, which kills the deploy before it starts — and retrying from the
+# same runner never helps. Re-running the failed run once draws a fresh
+# runner, which clears it. Capped to the first attempt so a genuine
+# failure still surfaces after one extra try.
+
+on:
+  workflow_run:
+    workflows: [Deploy docs]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  actions: write
+
+jobs:
+  rerun:
+    runs-on: ubuntu-latest
+    if: >-
+      ${{ github.event.workflow_run.conclusion == 'failure' &&
+      github.event.workflow_run.run_attempt == 1 }}
+    steps:
+      - name: Rerun the failed deploy once
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh run rerun ${{ github.event.workflow_run.id }} --failed --repo ${{ github.repository }}

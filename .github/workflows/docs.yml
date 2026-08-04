@@ -1,0 +1,60 @@
+name: Deploy docs
+
+# Reusable: works for ANY project that "Used this template" — the VPS deploy targets
+# github.labaccessnow.com/<repo>/ automatically (derived from $GITHUB_REPOSITORY), so
+# there is nothing per-repo to edit in this workflow. Needs repo secrets
+# VPS_DEPLOY_SSH_KEY / VPS_HOST / VPS_USER and Pages Source = GitHub Actions.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "docs/**"
+      - "mkdocs.yml"
+      - ".github/workflows/docs.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install MkDocs Material
+        run: pip install mkdocs-material
+      - name: Build site
+        run: mkdocs build --clean   # -> ./site
+      - name: Deploy to VPS (github.labaccessnow.com/<repo>/)
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "${{ secrets.VPS_DEPLOY_SSH_KEY }}" > ~/.ssh/deploy && chmod 600 ~/.ssh/deploy
+          ssh-keyscan -H "${{ secrets.VPS_HOST }}" >> ~/.ssh/known_hosts 2>/dev/null
+          REPO_NAME="${GITHUB_REPOSITORY##*/}"   # owner/repo -> repo
+          # --delete is safe: rsync targets only THIS project's subdir.
+          rsync -az --delete -e "ssh -i ~/.ssh/deploy -o StrictHostKeyChecking=yes" \
+            site/ "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:${REPO_NAME}/"
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

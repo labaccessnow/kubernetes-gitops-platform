@@ -1,0 +1,67 @@
+# Docs for the Kubernetes GitOps Platform. Built from docs-template.
+site_name: Kubernetes GitOps Platform
+site_description: A multi-tenant Kubernetes platform reconciled by ArgoCD across two independent failure domains, with a third-domain control-plane tiebreaker.
+site_url: https://github.labaccessnow.com/kubernetes-gitops-platform/
+repo_url: https://github.com/labaccessnow/kubernetes-gitops-platform
+repo_name: labaccessnow/kubernetes-gitops-platform
+edit_uri: edit/main/docs/
+copyright: MIT-licensed.
+
+theme:
+  name: material
+  icon:
+    repo: fontawesome/brands/github
+  features:
+    - navigation.sections
+    - navigation.instant
+    - navigation.instant.progress
+    - navigation.top
+    - navigation.footer
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+    - content.code.annotate
+    - toc.follow
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.tabbed:
+      alternate_style: true
+  - attr_list
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+
+nav:
+  - Home: index.md
+  - Architecture: architecture.md
+  - GitOps: gitops.md
+  - The app chart: app-chart.md
+  - Shared services: shared-services.md
+  - Operations: operations.md
